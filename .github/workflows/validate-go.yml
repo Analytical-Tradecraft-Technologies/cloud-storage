@@ -1,0 +1,44 @@
+name: Validate Go
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate module
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+        working-directory: golang/storage/providercontracts
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: golang/storage/providercontracts/go.mod
+          cache: false
+
+      - name: Check Go formatting
+        run: |
+          formatted="$(go fmt ./...)"
+          if [[ -n "$formatted" ]]; then
+            printf 'Run go fmt ./... and commit the changes to:\n%s\n' "$formatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build packages
+        run: go build ./...

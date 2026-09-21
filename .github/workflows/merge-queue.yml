@@ -1,0 +1,17 @@
+name: Validate merge queue
+
+on:
+  merge_group:
+    types:
+      - checks_requested
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloud-storage-merge-queue-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    uses: ./.github/workflows/validate-go.yml
