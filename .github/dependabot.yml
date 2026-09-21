@@ -1,0 +1,29 @@
+version: 2
+
+# No groups: each dependency gets its own update PR. Required transitive
+# changes may accompany that dependency to keep the module graph consistent.
+updates:
+  - package-ecosystem: gomod
+    # Include the current contracts module and future Go provider modules.
+    directories:
+      - /golang/**
+    allow:
+      - dependency-type: all
+    schedule:
+      # Unlike interval: daily, this includes Saturday and Sunday.
+      interval: cron
+      cronjob: "0 5 * * *"
+      timezone: Australia/Sydney
+    cooldown:
+      default-days: 3
+    open-pull-requests-limit: 100
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: cron
+      cronjob: "0 5 * * *"
+      timezone: Australia/Sydney
+    cooldown:
+      default-days: 3
+    open-pull-requests-limit: 100
