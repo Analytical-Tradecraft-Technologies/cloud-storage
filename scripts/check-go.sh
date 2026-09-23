@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Keep one stable CI check while validating every independent Go module.
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 command_name="${1:-}"
 case "$command_name" in
   fmt|vet|test|build) ;;
