@@ -30,3 +30,7 @@ make build
 The root `go.work` selects these modules together for development. Published
 consumers use normal module requirements, without local replacements. The first
 coordinated v0.1.0 release requires tags after merge; see [RELEASING.md](RELEASING.md).
+
+[`eventsourcing`](eventsourcing) is the caller-facing event-sourcing module. It
+depends only on the KV provider contract and offers typed state reads, conditional
+append, and explicit paginated history access.

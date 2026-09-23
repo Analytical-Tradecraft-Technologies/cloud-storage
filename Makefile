@@ -41,13 +41,16 @@ check-release:
 	$(GO) mod init cloud-storage-release-consumer; \
 	$(GO) get "$(STORAGE_MODULE)/providercontracts@$(RELEASE_VERSION)" \
 		"$(STORAGE_MODULE)/providers/aws@$(RELEASE_VERSION)" \
-		"$(STORAGE_MODULE)/providers@$(RELEASE_VERSION)"; \
+		"$(STORAGE_MODULE)/providers@$(RELEASE_VERSION)" \
+		"$(STORAGE_MODULE)/eventsourcing@$(RELEASE_VERSION)"; \
 	printf '%s\n' 'package main' 'import (' \
 		'"$(STORAGE_MODULE)/providercontracts/kv"' \
+		'"$(STORAGE_MODULE)/eventsourcing"' \
 		'"$(STORAGE_MODULE)/providers"' \
 		'awsprovider "$(STORAGE_MODULE)/providers/aws"' ')' \
 		'func main() {' \
 		' _ = kv.KeyValueStore.QueryPartition' \
+		' _ = eventsourcing.NewEventStreamStore[struct{}]' \
 		' _ = providers.FromJSON' \
 		' _ = awsprovider.New' '}' > main.go; \
 	$(GO) mod tidy; \

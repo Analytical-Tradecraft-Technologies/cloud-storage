@@ -1,6 +1,7 @@
 go 1.25.0
 
 use (
+	./golang/storage/eventsourcing
 	./golang/storage/providercontracts
 	./golang/storage/providers
 	./golang/storage/providers/aws
