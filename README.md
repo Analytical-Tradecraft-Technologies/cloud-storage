@@ -6,6 +6,8 @@ The Go library lives under [golang/storage](golang/storage):
 
 - [Provider contracts](golang/storage/providercontracts): KV, blob and store
   discovery interfaces, typed models, standardized errors and document encoding.
+- [Configured providers](golang/storage/providers): parsed JSON initialization
+  and application names mapped to tables and buckets.
 - [AWS provider](golang/storage/providers/aws): DynamoDB and S3 with IAM signing.
 
 The caller-facing wrapper remains a future module. Provider contracts have no
