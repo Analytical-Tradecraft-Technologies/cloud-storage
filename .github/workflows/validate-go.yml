@@ -26,13 +26,13 @@ jobs:
           cache: false
 
       - name: Check Go formatting
-        run: bash scripts/check-go.sh fmt
+        run: make fmt
 
       - name: Vet
-        run: bash scripts/check-go.sh vet
+        run: make vet
 
       - name: Test
-        run: bash scripts/check-go.sh test
+        run: make test
 
       - name: Build packages
-        run: bash scripts/check-go.sh build
+        run: make build

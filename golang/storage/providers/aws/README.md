@@ -169,7 +169,7 @@ this requirement, and remove the local replacement. A dependency's `replace`
 directive is not inherited by downstream applications.
 
 Run `go test -race ./...`, `go vet ./...` and `go build ./...` in this module, or
-use `bash scripts/check-go.sh` from the repository root. Tests use in-process
+use `make check` from the repository root. Tests use in-process
 SDK fakes and an HTTP transport that checks IAM signing and one-attempt writes;
 they need no AWS account, credentials, network or live resources. They do not
 prove deployed IAM permissions or real AWS service behavior.

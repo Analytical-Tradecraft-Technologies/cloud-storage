@@ -11,5 +11,5 @@ The Go library lives under [golang/storage](golang/storage):
 The caller-facing wrapper remains a future module. Provider contracts have no
 cloud SDK dependencies; each provider is an independent Go submodule.
 
-From the repository root, run `bash scripts/check-go.sh fmt`, `vet`, `test` and
-`build` to check every Go module. The shared GitHub Actions workflow does the same.
+From the repository root, run `make fmt`, `make vet`, `make test` and
+`make build` to check every Go module. The shared GitHub Actions workflow does the same.

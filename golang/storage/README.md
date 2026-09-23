@@ -19,8 +19,8 @@ The provider contracts module has no dependency on providers, their SDKs, or the
 Run all Go modules' checks from the repository root:
 
 ```sh
-bash scripts/check-go.sh fmt
-bash scripts/check-go.sh vet
-bash scripts/check-go.sh test
-bash scripts/check-go.sh build
+make fmt
+make vet
+make test
+make build
 ```
