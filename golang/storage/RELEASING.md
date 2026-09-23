@@ -1,6 +1,6 @@
 # Releasing the Go storage modules
 
-The three modules remain independently consumable. Local development and CI use
+The four modules remain independently consumable. Local development and CI use
 `go.work` to select sibling source trees, with version-specific workspace
 replacements so Go can load the graph before coordinated tags exist. Their `go.mod` files have normal
 versioned requirements and no filesystem replacements. A dependency's replace
@@ -16,18 +16,19 @@ workspace is not evidence that these releases exist.
 1. Merge this PR through the normal merge queue. Fetch `origin/master` over HTTPS
    and verify that it contains the reviewed changes. Use the final merged commit,
    not a feature-branch hash: merge queues may rewrite commit hashes.
-2. As a maintainer permitted by the repository's tag rules, create these three
+2. As a maintainer permitted by the repository's tag rules, create these four
    annotated tags at that same verified merged commit, then push them together:
 
    - `golang/storage/providercontracts/v0.1.0`
    - `golang/storage/providers/aws/v0.1.0`
    - `golang/storage/providers/v0.1.0`
+   - `golang/storage/eventsourcing/v0.1.0`
 
    The prefixes are required because each module lives in a repository subdirectory.
-   Publishing all three completes the dependency graph. Never replace an existing
+   Publishing all four completes the dependency graph. Never replace an existing
    released tag; if a release is wrong, prepare and publish a new version.
 3. Run `make check-release` from the released checkout. It creates a temporary
-   consumer outside the workspace, downloads the three normal module paths at
+   consumer outside the workspace, downloads the four normal module paths at
    v0.1.0, rejects replacements, and builds against the public query and loader
    APIs with `GOWORK=off`. It needs network access but no AWS credentials/resources.
    `RELEASE_VERSION` can select a later coordinated release. A proxy may take time

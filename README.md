@@ -20,3 +20,9 @@ Local checks use the committed Go workspace. External consumers require the
 pending coordinated module release; see [the release procedure](golang/storage/RELEASING.md).
 After publication, `make check-release` validates a clean consumer without workspace
 or replacement directives. It deliberately fails while release tags are missing.
+
+## Event sourcing
+
+The provider-independent [event-sourcing module](golang/storage/eventsourcing)
+adds immutable change batches, optimistic append concurrency, retry reconciliation,
+and typed state replay with application-version-aware builders.
