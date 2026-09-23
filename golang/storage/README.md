@@ -4,8 +4,8 @@ This directory is reserved for the future caller-facing storage API and helpers.
 It does not yet contain a Go module or wrapper implementation.
 
 The independent [provider contracts submodule](providercontracts) contains the provider contracts,
-shared models, standardized errors and typed document encoding. Provider
-implementations will depend on that submodule. The eventual caller-facing
+shared models, standardized errors and typed document encoding. The [AWS provider](providers/aws) is a separate submodule depending on those
+contracts. The eventual caller-facing
 module can depend on the same contracts while adding convenient operations.
 
 Intended dependency direction:
@@ -16,10 +16,11 @@ Intended dependency direction:
 
 The provider contracts module has no dependency on providers, their SDKs, or the future wrapper.
 
-Run the current module's checks from its own directory:
+Run all Go modules' checks from the repository root:
 
 ```sh
-cd golang/storage/providercontracts
-go test ./...
-go vet ./...
+bash scripts/check-go.sh fmt
+bash scripts/check-go.sh vet
+bash scripts/check-go.sh test
+bash scripts/check-go.sh build
 ```

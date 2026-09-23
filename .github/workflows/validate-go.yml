@@ -14,7 +14,6 @@ jobs:
     defaults:
       run:
         shell: bash
-        working-directory: golang/storage/providercontracts
 
     steps:
       - name: Check out repository
@@ -27,18 +26,13 @@ jobs:
           cache: false
 
       - name: Check Go formatting
-        run: |
-          formatted="$(go fmt ./...)"
-          if [[ -n "$formatted" ]]; then
-            printf 'Run go fmt ./... and commit the changes to:\n%s\n' "$formatted"
-            exit 1
-          fi
+        run: bash scripts/check-go.sh fmt
 
       - name: Vet
-        run: go vet ./...
+        run: bash scripts/check-go.sh vet
 
       - name: Test
-        run: go test ./...
+        run: bash scripts/check-go.sh test
 
       - name: Build packages
-        run: go build ./...
+        run: bash scripts/check-go.sh build
