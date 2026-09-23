@@ -81,7 +81,10 @@ A store requires an ACTIVE, single-region table with these primary keys:
 | `sk` | String | Sort key |
 
 `OpenKeyValueStore` calls DescribeTable and rejects incompatible schemas and
-global tables. Keep the table single-region while using the handle. All writers
+global tables. Data operations use the validated table ARN, so rotating credentials
+cannot redirect a handle to an equally named table in another account. Keep the
+table single-region while using the handle; reopen handles after deleting and
+recreating a table. Table identity is validated at open, not before every call. All writers
 must use this adapter's format and concurrency protocol; external unconditional
 writes or lifecycle deletion can violate its guarantees.
 
@@ -107,6 +110,27 @@ Reads use `ConsistentRead`. Create uses `attribute_not_exists(pk)`; Replace and
 Delete atomically compare `_cs_version`. Identical writes get new revisions;
 delete/recreate does not deliberately reuse a revision. Timestamps are generated
 by the writer and are descriptive, not the concurrency condition.
+
+## Partition queries
+
+`QueryPartition` uses a strongly consistent DynamoDB Query on the base table,
+with an exact encoded partition and optional literal sort-key prefix. It never
+uses Scan, secondary indexes, post-read filters, or automatic pagination. UTF-8
+byte order is preserved by the constant key prefix; order is always ascending.
+Page sizes default to 100 and are capped at 1000 records; DynamoDB's 1 MiB
+response bound can end a page earlier. No cross-record or multi-page snapshot is
+promised. See the [portable query example](../../providercontracts/README.md#partition-queries).
+
+Continuation tokens are versioned, bounded to 16 KiB, and bind the table ARN
+(account/region/name), table incarnation ID, partition, prefix and normalized
+page size.
+They work after reopening the same table or restarting a process. Keep the page
+size unchanged; default zero and explicit 100 are equivalent. Reopening a
+recreated table rejects its predecessor's tokens.
+Tokens contain keys and must not be logged. They are opaque continuation state,
+not signed authorization grants: applications must authorize every query.
+Malformed/mismatched tokens fail before I/O. Corrupt or out-of-order backend
+records fail the entire page with `ErrUnknown`; no partial result is returned.
 
 ## S3 behavior
 
@@ -150,7 +174,7 @@ Grant only the operations each application needs:
 | Usage | Permissions |
 | --- | --- |
 | Open KV store | `dynamodb:DescribeTable` on the table |
-| KV data | `dynamodb:GetItem`, `dynamodb:PutItem`, `dynamodb:DeleteItem` on the table |
+| KV data | `dynamodb:GetItem`, `dynamodb:Query`, `dynamodb:PutItem`, `dynamodb:DeleteItem` on the table |
 | Discover KV stores | `dynamodb:ListTables` on `*` |
 | Open blob store | `s3:ListBucket` on the bucket (HeadBucket) |
 | Blob data | `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject` on its objects |
@@ -162,11 +186,11 @@ needed when opening a known store. Provisioning permissions are never needed.
 
 ## Development and release
 
-This unreleased module currently uses a local `replace` for the sibling contracts
-module so both can be reviewed together without publishing first. Before external
-consumption, release the updated contracts under a real module version, update
-this requirement, and remove the local replacement. A dependency's `replace`
-directive is not inherited by downstream applications.
+Local development uses the repository's `go.work`; module manifests contain semantic
+version requirements and no local replacements. The coordinated v0.1.0 release
+is pending: see the [release procedure](../../RELEASING.md) for the required tags
+on merged master and the independent consumer check. Workspace checks alone do
+not prove that those versions have been published.
 
 Run `go test -race ./...`, `go vet ./...` and `go build ./...` in this module, or
 use `make check` from the repository root. Tests use in-process
@@ -176,6 +200,7 @@ prove deployed IAM permissions or real AWS service behavior.
 
 References:
 - [AWS SDK configuration and credential chain](https://docs.aws.amazon.com/sdk-for-go/v2/developer-guide/configure-gosdk.html)
+- [DynamoDB Query](https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_Query.html)
 - [DynamoDB conditional PutItem](https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_PutItem.html)
 - [DynamoDB limits](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Constraints.html)
 - [S3 conditional PutObject](https://docs.aws.amazon.com/AmazonS3/latest/API/API_PutObject.html)

@@ -22,14 +22,30 @@ import (
 func compatibleTable() *ddbtypes.TableDescription {
 	return &ddbtypes.TableDescription{
 		TableStatus:          ddbtypes.TableStatusActive,
+		TableId:              aws.String("test-table-id"),
+		TableArn:             aws.String("arn:aws:dynamodb:ap-southeast-2:123456789012:table/test"),
 		KeySchema:            []ddbtypes.KeySchemaElement{{AttributeName: aws.String("pk"), KeyType: ddbtypes.KeyTypeHash}, {AttributeName: aws.String("sk"), KeyType: ddbtypes.KeyTypeRange}},
 		AttributeDefinitions: []ddbtypes.AttributeDefinition{{AttributeName: aws.String("pk"), AttributeType: ddbtypes.ScalarAttributeTypeS}, {AttributeName: aws.String("sk"), AttributeType: ddbtypes.ScalarAttributeTypeS}},
 	}
 }
 
 func TestOpenMultipleStoresWithoutListing(t *testing.T) {
-	d := &fakeDynamo{describe: func(*dynamodb.DescribeTableInput) (*dynamodb.DescribeTableOutput, error) {
-		return &dynamodb.DescribeTableOutput{Table: compatibleTable()}, nil
+	var wantARN string
+	d := &fakeDynamo{describe: func(in *dynamodb.DescribeTableInput) (*dynamodb.DescribeTableOutput, error) {
+		table := compatibleTable()
+		table.TableArn = aws.String("arn:aws:dynamodb:ap-southeast-2:123456789012:table/" + *in.TableName)
+		wantARN = *table.TableArn
+		return &dynamodb.DescribeTableOutput{Table: table}, nil
+	}, get: func(in *dynamodb.GetItemInput) (*dynamodb.GetItemOutput, error) {
+		if aws.ToString(in.TableName) != wantARN {
+			t.Fatal("read must target the validated account/region/table ARN")
+		}
+		return &dynamodb.GetItemOutput{}, nil
+	}, query: func(in *dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
+		if aws.ToString(in.TableName) != wantARN {
+			t.Fatal("query must target the validated account/region/table ARN")
+		}
+		return &dynamodb.QueryOutput{}, nil
 	}}
 	b := &fakeS3{head: func(*s3.HeadBucketInput) (*s3.HeadBucketOutput, error) {
 		return &s3.HeadBucketOutput{BucketRegion: aws.String("ap-southeast-2")}, nil
@@ -40,8 +56,14 @@ func TestOpenMultipleStoresWithoutListing(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if store.(*dynamoStore).table != name {
+		if store.(*dynamoStore).table != wantARN {
 			t.Fatal("wrong table")
+		}
+		if _, err := store.Get(context.Background(), kv.KeyValueKey{PartitionKey: "account"}); !errors.Is(err, contracts.ErrNotFound) {
+			t.Fatal(err)
+		}
+		if _, err := store.QueryPartition(context.Background(), kv.KeyValueQuery{PartitionKey: "account"}); err != nil {
+			t.Fatal(err)
 		}
 		blob, err := p.OpenBlobStore(context.Background(), name)
 		if err != nil {

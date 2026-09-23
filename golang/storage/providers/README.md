@@ -92,8 +92,7 @@ Run `make check` from the repository root to validate all three modules. Run
 `go test -race ./...` here for the loader tests. Tests are offline and do not
 validate deployed IAM permissions or live AWS resources.
 
-This module currently uses local replacements and placeholder requirements for
-the contracts and AWS modules, matching the repository's development setup.
-Before publishing for downstream consumption, release those dependencies, pin
-real versions, and remove the local replacements. Replacements in a dependency
-are not inherited by applications.
+The repository's `go.work` selects sibling modules for development. Module
+manifests have no local replacements. External consumption requires the pending
+coordinated v0.1.0 release: follow the [release procedure](../RELEASING.md), which
+tags the final merged master commit and checks a fresh consumer with `GOWORK=off`.

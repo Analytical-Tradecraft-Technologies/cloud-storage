@@ -1,0 +1,13 @@
+go 1.25.0
+
+use (
+	./golang/storage/providercontracts
+	./golang/storage/providers
+	./golang/storage/providers/aws
+)
+
+// Version-specific replacements keep unpublished coordinated releases local.
+// Downstream applications never read this workspace.
+replace github.com/Analytical-Tradecraft-Technologies/cloud-storage/golang/storage/providercontracts v0.1.0 => ./golang/storage/providercontracts
+
+replace github.com/Analytical-Tradecraft-Technologies/cloud-storage/golang/storage/providers/aws v0.1.0 => ./golang/storage/providers/aws

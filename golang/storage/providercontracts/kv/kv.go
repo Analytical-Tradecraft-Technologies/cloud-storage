@@ -11,7 +11,7 @@ import (
 // a configured store. Components are case-sensitive valid UTF-8 strings.
 // PartitionKey must be nonempty; SortKey may be empty. Providers must encode
 // the pair without collisions and document backend size limits. Components
-// are not paths or resource URLs. No ordering or partition query is promised.
+// are not paths or resource URLs. QueryPartition orders sort keys by UTF-8 bytes.
 type KeyValueKey struct {
 	PartitionKey string
 	SortKey      string
@@ -53,8 +53,41 @@ type KeyValueRecord struct {
 	LastModifiedAt time.Time
 }
 
-// KeyValueStore is the provider contract. Each operation must be linearizable for its
-// key: completed writes are visible to subsequent reads, and checking a
+// KeyValueQuery requests one bounded page within an exact partition. An empty
+// SortKeyPrefix selects every sort key, including the empty key. Nonempty prefixes
+// must be valid UTF-8 and match literal bytes (no wildcard or path semantics).
+// Results are ordered ascending, lexicographically by UTF-8 bytes. Use fixed-width
+// or inverted encodings when numeric, chronological, or newest-first order is needed.
+// PageSize defaults to 100; valid explicit sizes are 1 through 1000.
+//
+// PageToken is opaque and bound to the physical store, partition, prefix, and
+// page size. Only reuse it with that query; zero and 100 are equivalent page sizes.
+// Tokens must survive reopening the same store and process restarts, but are not
+// authorization grants or secret credentials. They may contain keys: do not log
+// or parse them. Invalid or mismatched tokens return ErrInvalidArgument before I/O.
+type KeyValueQuery struct {
+	PartitionKey  string
+	SortKeyPrefix string
+	PageSize      int
+	PageToken     string
+}
+
+// KeyValueQueryPage owns its records and all their nested document data.
+// A page may contain fewer than PageSize records, including none. Keep querying
+// with NextPageToken until it is empty; a token does not promise another record.
+// Missing partitions produce an empty successful page, not ErrNotFound.
+//
+// Reads are strongly consistent, but neither a page nor successive pages form
+// an atomic snapshot. Concurrent inserts behind the cursor may be missed, and
+// records may be replaced or deleted between pages. Applications must reconcile
+// concurrent changes when traversing mutable partitions.
+type KeyValueQueryPage struct {
+	Records       []KeyValueRecord
+	NextPageToken string
+}
+
+// KeyValueStore is the provider contract. Single-key operations must be linearizable:
+// for each key, completed writes are visible to subsequent reads, and checking a
 // condition and performing its mutation is one atomic operation. A successful
 // write is acknowledged only after acceptance by the backend's durable write
 // mechanism. Reads cannot use an eventually consistent index or replica.
@@ -79,6 +112,10 @@ type KeyValueRecord struct {
 type KeyValueStore interface {
 	// Get returns one consistent document and its metadata, or providercontracts.ErrNotFound.
 	Get(ctx context.Context, key KeyValueKey) (KeyValueRecord, error)
+
+	// QueryPartition reads an ordered page from the authoritative store, without
+	// eventually consistent indexes, field filtering, or cross-partition scans.
+	QueryPartition(ctx context.Context, query KeyValueQuery) (KeyValueQueryPage, error)
 
 	// Create stores item only if item.Key() is absent and returns its new version.
 	// An existing key returns providercontracts.ErrAlreadyExists without changing it.
