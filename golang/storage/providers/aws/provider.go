@@ -119,7 +119,10 @@ func (p *AWSStorageProvider) OpenKeyValueStore(ctx context.Context, name string)
 	if len(schema) != 2 || schema["pk"] != ddbtypes.KeyTypeHash || schema["sk"] != ddbtypes.KeyTypeRange || attributes["pk"] != ddbtypes.ScalarAttributeTypeS || attributes["sk"] != ddbtypes.ScalarAttributeTypeS {
 		return nil, failure(op, contracts.ErrUnsupported, nil)
 	}
-	return &dynamoStore{client: p.dynamo, table: name}, nil
+	if aws.ToString(table.TableArn) == "" || aws.ToString(table.TableId) == "" {
+		return nil, failure(op, contracts.ErrUnknown, nil)
+	}
+	return &dynamoStore{client: p.dynamo, table: *table.TableArn, tableARN: *table.TableArn, tableID: *table.TableId}, nil
 }
 
 // OpenBlobStore checks access and region for an existing general-purpose bucket.

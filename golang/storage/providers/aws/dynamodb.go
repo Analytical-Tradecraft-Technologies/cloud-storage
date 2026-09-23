@@ -23,8 +23,10 @@ const (
 )
 
 type dynamoStore struct {
-	client dynamoAPI
-	table  string
+	client   dynamoAPI
+	table    string
+	tableARN string
+	tableID  string
 }
 
 var _ kv.KeyValueStore = (*dynamoStore)(nil)
@@ -59,9 +61,13 @@ func (s *dynamoStore) Get(ctx context.Context, key kv.KeyValueKey) (kv.KeyValueR
 	if len(out.Item) == 0 {
 		return kv.KeyValueRecord{}, failure(op, contracts.ErrNotFound, nil)
 	}
-	data, dataOK := out.Item[dataAttribute].(*types.AttributeValueMemberB)
-	version, versionOK := out.Item[versionAttribute].(*types.AttributeValueMemberS)
-	modified, modifiedOK := out.Item[modifiedAttribute].(*types.AttributeValueMemberS)
+	return decodeDynamoRecord(op, key, out.Item)
+}
+
+func decodeDynamoRecord(op string, key kv.KeyValueKey, attrs map[string]types.AttributeValue) (kv.KeyValueRecord, error) {
+	data, dataOK := attrs[dataAttribute].(*types.AttributeValueMemberB)
+	version, versionOK := attrs[versionAttribute].(*types.AttributeValueMemberS)
+	modified, modifiedOK := attrs[modifiedAttribute].(*types.AttributeValueMemberS)
 	if !dataOK || data == nil || !versionOK || version == nil || version.Value == "" || !modifiedOK || modified == nil {
 		return kv.KeyValueRecord{}, failure(op, contracts.ErrUnknown, nil)
 	}

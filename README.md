@@ -15,3 +15,8 @@ cloud SDK dependencies; each provider is an independent Go submodule.
 
 From the repository root, run `make fmt`, `make vet`, `make test` and
 `make build` to check every Go module. The shared GitHub Actions workflow does the same.
+
+Local checks use the committed Go workspace. External consumers require the
+pending coordinated module release; see [the release procedure](golang/storage/RELEASING.md).
+After publication, `make check-release` validates a clean consumer without workspace
+or replacement directives. It deliberately fails while release tags are missing.

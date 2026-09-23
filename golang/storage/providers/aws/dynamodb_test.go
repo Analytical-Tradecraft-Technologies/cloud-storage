@@ -18,6 +18,7 @@ import (
 
 type fakeDynamo struct {
 	dynamoAPI
+	query    func(*dynamodb.QueryInput) (*dynamodb.QueryOutput, error)
 	get      func(*dynamodb.GetItemInput) (*dynamodb.GetItemOutput, error)
 	put      func(*dynamodb.PutItemInput) (*dynamodb.PutItemOutput, error)
 	delete   func(*dynamodb.DeleteItemInput) (*dynamodb.DeleteItemOutput, error)
@@ -25,6 +26,9 @@ type fakeDynamo struct {
 	list     func(*dynamodb.ListTablesInput) (*dynamodb.ListTablesOutput, error)
 }
 
+func (f *fakeDynamo) Query(_ context.Context, in *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+	return f.query(in)
+}
 func (f *fakeDynamo) GetItem(_ context.Context, in *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
 	return f.get(in)
 }

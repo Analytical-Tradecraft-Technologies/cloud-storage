@@ -3,8 +3,8 @@ module github.com/Analytical-Tradecraft-Technologies/cloud-storage/golang/storag
 go 1.25.0
 
 require (
-	github.com/Analytical-Tradecraft-Technologies/cloud-storage/golang/storage/providercontracts v0.0.0
-	github.com/Analytical-Tradecraft-Technologies/cloud-storage/golang/storage/providers/aws v0.0.0
+	github.com/Analytical-Tradecraft-Technologies/cloud-storage/golang/storage/providercontracts v0.1.0
+	github.com/Analytical-Tradecraft-Technologies/cloud-storage/golang/storage/providers/aws v0.1.0
 )
 
 require (
@@ -29,7 +29,3 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sts v1.51.0 // indirect
 	github.com/aws/smithy-go v1.28.1 // indirect
 )
-
-replace github.com/Analytical-Tradecraft-Technologies/cloud-storage/golang/storage/providercontracts => ../providercontracts
-
-replace github.com/Analytical-Tradecraft-Technologies/cloud-storage/golang/storage/providers/aws => ./aws

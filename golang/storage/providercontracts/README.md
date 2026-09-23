@@ -22,7 +22,7 @@ A configured store represents a single namespace; keys are not authorization.
 
 ## KV semantics
 
-`kv.KeyValueStore` provides Get, Create, Replace and Delete.
+`kv.KeyValueStore` provides Get, QueryPartition, Create, Replace and Delete.
 
 `Get` returns a `KeyValueRecord` containing the item, modification time and an opaque `kv.KeyValueVersion`. Pass that version back to `Replace`
 or `Delete`. A concurrent modification makes the condition fail atomically.
@@ -43,8 +43,8 @@ Missing reads return `providercontracts.ErrNotFound`; duplicate creates return
 `providercontracts.ErrAlreadyExists`; missing or stale conditional mutations return
 `providercontracts.ErrConflict`. Empty documents are supported. Partition keys must be nonempty; sort keys may
 be empty. Both components must be valid UTF-8, and their pair identifies the
-item. Empty expected versions are invalid. Partition queries and ordering are
-not part of this initial contract.
+item. Empty expected versions are invalid. Partition queries order sort keys by
+UTF-8 bytes and optionally select a literal prefix.
 
 The required guarantees are per-key linearizability and durable acknowledgement.
 This does not promise survival of arbitrary disasters, cross-region consistency,
@@ -57,6 +57,52 @@ committed but its outcome cannot be established. Preserve any context error too
 (for example with `errors.Join`). A caller cannot infer that a timed-out request
 failed. Application operation IDs embedded in values can support reconciliation;
 matching content alone does not prove which writer committed it.
+
+## Partition queries
+
+Use an exact partition and optionally a literal sort-key prefix. An empty prefix
+includes every key, including the empty sort key. Results use UTF-8 byte order,
+not locale or numeric order; encode sequence numbers at a fixed width when
+lexical ordering must match numeric ordering.
+
+```go
+query := kv.KeyValueQuery{
+    PartitionKey: "request/123",
+    SortKeyPrefix: "run/",
+    Descending: true,
+    PageSize: 50,
+}
+for {
+    page, err := store.QueryPartition(ctx, query)
+    if err != nil {
+        return err
+    }
+    for _, record := range page.Records {
+        // Inspect history or reconcile application-owned pending records.
+        _ = record
+    }
+    if page.NextPageToken == "" {
+        break
+    }
+    query.PageToken = page.NextPageToken
+}
+```
+
+Zero page size means 100; explicit sizes must be 1–1000. Providers may return a
+shorter or empty page with a continuation token. Only an empty `NextPageToken`
+ends iteration. A missing partition is a successful empty page.
+
+Tokens bind the physical store and query (partition, prefix, direction), survive
+store reopening/process restart, and allow changing page size. They are opaque,
+may contain keys, and must not be parsed or logged. They do not authorize reads.
+Invalid tokens and arguments return `ErrInvalidArgument` before network I/O.
+
+Each record has strongly consistent data and metadata, but a query is not an
+atomic snapshot across records or pages. Concurrent updates can change the
+traversal, and inserts behind the cursor can be missed. Reconciliation of mutable
+partitions remains the application's responsibility. Field predicates, arbitrary
+sort expressions, range filters, transactions, and cross-partition scans are not
+part of this minimal API.
 
 ## Typed items and read metadata
 
@@ -169,8 +215,8 @@ not grant access or certify that their schemas are supported. Opening a known
 store does not require permission for account-wide discovery.
 
 Stores are namespaces, not individual records or objects. Provisioning stores,
-listing records/objects within a store, and a final caller-facing wrapper are
-separate concerns and are not added by this interface. The initial
+cross-partition record scans, object listing, and a final caller-facing wrapper
+remain separate concerns. The initial
 [AWS implementation](../providers/aws) maps stores to existing tables and buckets.
 
 ## Blob semantics
@@ -209,8 +255,8 @@ erasure of historical versions, snapshots or backups.
 Providers must use authoritative, strongly consistent KV reads. Tokens are
 opaque and bound to the store/key; an adapter may need an incarnation component
 to enforce the no-token-reuse rule. Arbitrary backend conditional expressions
-are not exposed. There are no partition, transaction or query APIs yet, so the
-contract does not assume DynamoDB's cross-key transaction capabilities.
+are not exposed. Partition queries do not add transactions or field queries; the contract does
+not assume DynamoDB's cross-key transaction capabilities.
 
 References:
 - [DynamoDB conditional operations](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Expressions.ConditionExpressions.html)
@@ -223,8 +269,7 @@ References:
 ## Deliberately deferred
 
 Additional provider implementations, in-memory stores, conformance suites, automatic
-retries, transactions, listing, TTL, configuration
-loaders and metrics wrappers. Add these when a concrete caller requires them.
+retries, transactions, cross-partition/object listing, TTL and metrics wrappers. Add these when a concrete caller requires them.
 Provider implementations should bring shared behavioral tests for concurrency,
 stale tokens, delete/recreate races, uncertain writes and stream failures.
 
