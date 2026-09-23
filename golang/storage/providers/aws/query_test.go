@@ -38,63 +38,53 @@ func queryTestRecord(t *testing.T, partition, sortKey string) map[string]types.A
 }
 
 func TestQueryPartitionPagination(t *testing.T) {
-	for _, descending := range []bool{false, true} {
-		t.Run(map[bool]string{false: "ascending", true: "descending"}[descending], func(t *testing.T) {
-			keys := []string{"", "Z", "é", "😀"}
-			if descending {
-				keys = []string{"😀", "é", "Z", ""}
+	keys := []string{"", "Z", "é", "😀"}
+	calls := 0
+	f := &fakeDynamo{query: func(in *dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
+		if aws.ToString(in.TableName) != "test" || !aws.ToBool(in.ConsistentRead) || !aws.ToBool(in.ScanIndexForward) || in.IndexName != nil || in.FilterExpression != nil {
+			t.Fatal("query must use the authoritative table in ascending order")
+		}
+		if aws.ToString(in.KeyConditionExpression) != "#pk = :pk" || in.ExpressionAttributeNames["#pk"] != "pk" || in.ExpressionAttributeValues[":pk"].(*types.AttributeValueMemberS).Value != "saccount" {
+			t.Fatal("wrong exact partition condition")
+		}
+		if calls > 0 {
+			if in.ExclusiveStartKey["sk"].(*types.AttributeValueMemberS).Value != "s"+keys[calls-1] {
+				t.Fatal("lost continuation key")
 			}
-			calls := 0
-			f := &fakeDynamo{query: func(in *dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
-				if aws.ToString(in.TableName) != "test" || !aws.ToBool(in.ConsistentRead) || aws.ToBool(in.ScanIndexForward) == descending || in.IndexName != nil || in.FilterExpression != nil {
-					t.Fatal("query must use the authoritative table and requested direction")
-				}
-				if aws.ToString(in.KeyConditionExpression) != "#pk = :pk" || in.ExpressionAttributeNames["#pk"] != "pk" || in.ExpressionAttributeValues[":pk"].(*types.AttributeValueMemberS).Value != "saccount" {
-					t.Fatal("wrong exact partition condition")
-				}
-				wantLimit := int32(1)
-				if calls > 0 {
-					wantLimit = 2 // PageSize may change without invalidating the cursor.
-					if in.ExclusiveStartKey["sk"].(*types.AttributeValueMemberS).Value != "s"+keys[calls-1] {
-						t.Fatal("lost continuation key")
-					}
-				} else if in.ExclusiveStartKey != nil {
-					t.Fatal("unexpected initial cursor")
-				}
-				if aws.ToInt32(in.Limit) != wantLimit {
-					t.Fatal("wrong page bound")
-				}
-				// A provider may return fewer than the requested number of records.
-				out := &dynamodb.QueryOutput{Items: []map[string]types.AttributeValue{queryTestRecord(t, "account", keys[calls])}}
-				calls++
-				if calls < len(keys) {
-					out.LastEvaluatedKey, _ = dynamoKey(kv.KeyValueKey{PartitionKey: "account", SortKey: keys[calls-1]})
-				}
-				return out, nil
-			}}
-			query := kv.KeyValueQuery{PartitionKey: "account", Descending: descending, PageSize: 1}
-			var got []string
-			for {
-				// New handles accept tokens emitted before a process/store reopen.
-				page, err := queryTestStore(f).QueryPartition(context.Background(), query)
-				if err != nil {
-					t.Fatal(err)
-				}
-				for _, record := range page.Records {
-					got = append(got, record.Item.SortKey)
-					if record.Version != "version" || record.LastModifiedAt.Location() != time.UTC || record.LastModifiedAt.Hour() != 0 || record.Item.Fields["integer"].(kv.KeyValueInt64).Value() != 9007199254740993 || record.Item.Fields["null"].Kind() != kv.FieldNull {
-						t.Fatal("query lost record types or metadata")
-					}
-				}
-				if page.NextPageToken == "" {
-					break
-				}
-				query.PageToken, query.PageSize = page.NextPageToken, 2
+		} else if in.ExclusiveStartKey != nil {
+			t.Fatal("unexpected initial cursor")
+		}
+		if aws.ToInt32(in.Limit) != 1 {
+			t.Fatal("wrong page bound")
+		}
+		out := &dynamodb.QueryOutput{Items: []map[string]types.AttributeValue{queryTestRecord(t, "account", keys[calls])}}
+		calls++
+		if calls < len(keys) {
+			out.LastEvaluatedKey, _ = dynamoKey(kv.KeyValueKey{PartitionKey: "account", SortKey: keys[calls-1]})
+		}
+		return out, nil
+	}}
+	query := kv.KeyValueQuery{PartitionKey: "account", PageSize: 1}
+	var got []string
+	for {
+		// New handles accept tokens emitted before a process/store reopen.
+		page, err := queryTestStore(f).QueryPartition(context.Background(), query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, record := range page.Records {
+			got = append(got, record.Item.SortKey)
+			if record.Version != "version" || record.LastModifiedAt.Location() != time.UTC || record.LastModifiedAt.Hour() != 0 || record.Item.Fields["integer"].(kv.KeyValueInt64).Value() != 9007199254740993 || record.Item.Fields["null"].Kind() != kv.FieldNull {
+				t.Fatal("query lost record types or metadata")
 			}
-			if !reflect.DeepEqual(got, keys) {
-				t.Fatalf("sort order: got %q want %q", got, keys)
-			}
-		})
+		}
+		if page.NextPageToken == "" {
+			break
+		}
+		query.PageToken = page.NextPageToken
+	}
+	if !reflect.DeepEqual(got, keys) {
+		t.Fatalf("sort order: got %q want %q", got, keys)
 	}
 }
 
@@ -119,6 +109,7 @@ func TestQueryPrefixEmptyPagesAndDocumentOwnership(t *testing.T) {
 		t.Fatalf("empty intermediate page: %+v %v", first, err)
 	}
 	query.PageToken = first.NextPageToken
+	query.PageSize = 100 // The default size and explicit 100 are equivalent.
 	second, err := store.QueryPartition(context.Background(), query)
 	if err != nil || len(second.Records) != 1 || second.NextPageToken != "" {
 		t.Fatalf("terminal page: %+v %v", second, err)
@@ -143,7 +134,7 @@ func TestQueryValidatesArgumentsAndCursorScopeBeforeIO(t *testing.T) {
 		{PartitionKey: "account", PageToken: base64.RawURLEncoding.EncodeToString([]byte(`{"v":1}`))},
 		{PartitionKey: "other", SortKeyPrefix: "run/", PageToken: token},
 		{PartitionKey: "account", SortKeyPrefix: "different/", PageToken: token},
-		{PartitionKey: "account", SortKeyPrefix: "run/", Descending: true, PageToken: token},
+		{PartitionKey: "account", SortKeyPrefix: "run/", PageSize: 2, PageToken: token},
 	}
 	for _, q := range invalid {
 		if _, err := store.QueryPartition(context.Background(), q); !errors.Is(err, contracts.ErrInvalidArgument) {

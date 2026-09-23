@@ -63,13 +63,14 @@ matching content alone does not prove which writer committed it.
 Use an exact partition and optionally a literal sort-key prefix. An empty prefix
 includes every key, including the empty sort key. Results use UTF-8 byte order,
 not locale or numeric order; encode sequence numbers at a fixed width when
-lexical ordering must match numeric ordering.
+lexical ordering must match numeric ordering. Use inverted fixed-width values
+when newest-first history is needed. Ascending-only queries stay compatible with
+Azure Table Storage, which does not support alternate ordering.
 
 ```go
 query := kv.KeyValueQuery{
     PartitionKey: "request/123",
     SortKeyPrefix: "run/",
-    Descending: true,
     PageSize: 50,
 }
 for {
@@ -92,8 +93,8 @@ Zero page size means 100; explicit sizes must be 1–1000. Providers may return 
 shorter or empty page with a continuation token. Only an empty `NextPageToken`
 ends iteration. A missing partition is a successful empty page.
 
-Tokens bind the physical store and query (partition, prefix, direction), survive
-store reopening/process restart, and allow changing page size. They are opaque,
+Tokens bind the physical store and query (partition, prefix, page size), and survive
+store reopening/process restart. Keep page size unchanged; zero and 100 are equivalent. They are opaque,
 may contain keys, and must not be parsed or logged. They do not authorize reads.
 Invalid tokens and arguments return `ErrInvalidArgument` before network I/O.
 
@@ -101,7 +102,7 @@ Each record has strongly consistent data and metadata, but a query is not an
 atomic snapshot across records or pages. Concurrent updates can change the
 traversal, and inserts behind the cursor can be missed. Reconciliation of mutable
 partitions remains the application's responsibility. Field predicates, arbitrary
-sort expressions, range filters, transactions, and cross-partition scans are not
+sort directions, range filters, transactions, and cross-partition scans are not
 part of this minimal API.
 
 ## Typed items and read metadata
@@ -260,6 +261,7 @@ not assume DynamoDB's cross-key transaction capabilities.
 
 References:
 - [DynamoDB conditional operations](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Expressions.ConditionExpressions.html)
+- [Azure Table query ordering](https://learn.microsoft.com/en-us/rest/api/storageservices/querying-tables-and-entities)
 - [Azure Table conditional updates](https://learn.microsoft.com/en-us/rest/api/storageservices/update-entity2)
 - [Firestore preconditions](https://docs.cloud.google.com/firestore/docs/reference/rest/v1/Precondition)
 - [S3 conditional writes](https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-writes.html)

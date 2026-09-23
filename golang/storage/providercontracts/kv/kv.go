@@ -56,19 +56,18 @@ type KeyValueRecord struct {
 // KeyValueQuery requests one bounded page within an exact partition. An empty
 // SortKeyPrefix selects every sort key, including the empty key. Nonempty prefixes
 // must be valid UTF-8 and match literal bytes (no wildcard or path semantics).
-// Results are ordered lexicographically by UTF-8 bytes; Descending reverses that
-// order. Use fixed-width encodings when numeric or chronological order is needed.
+// Results are ordered ascending, lexicographically by UTF-8 bytes. Use fixed-width
+// or inverted encodings when numeric, chronological, or newest-first order is needed.
 // PageSize defaults to 100; valid explicit sizes are 1 through 1000.
 //
 // PageToken is opaque and bound to the physical store, partition, prefix, and
-// direction. Only reuse it with that query; PageSize may change between pages.
+// page size. Only reuse it with that query; zero and 100 are equivalent page sizes.
 // Tokens must survive reopening the same store and process restarts, but are not
 // authorization grants or secret credentials. They may contain keys: do not log
 // or parse them. Invalid or mismatched tokens return ErrInvalidArgument before I/O.
 type KeyValueQuery struct {
 	PartitionKey  string
 	SortKeyPrefix string
-	Descending    bool
 	PageSize      int
 	PageToken     string
 }
@@ -87,8 +86,8 @@ type KeyValueQueryPage struct {
 	NextPageToken string
 }
 
-// KeyValueStore is the provider contract. Each operation must be linearizable for its
-// key: completed writes are visible to subsequent reads, and checking a
+// KeyValueStore is the provider contract. Single-key operations must be linearizable:
+// for each key, completed writes are visible to subsequent reads, and checking a
 // condition and performing its mutation is one atomic operation. A successful
 // write is acknowledged only after acceptance by the backend's durable write
 // mechanism. Reads cannot use an eventually consistent index or replica.

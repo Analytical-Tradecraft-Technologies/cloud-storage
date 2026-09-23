@@ -28,8 +28,8 @@ type queryCursor struct {
 func (s *dynamoStore) queryBinding(q kv.KeyValueQuery) string {
 	data, _ := json.Marshal(struct {
 		ARN, ID, Partition, Prefix string
-		Descending                 bool
-	}{s.tableARN, s.tableID, q.PartitionKey, q.SortKeyPrefix, q.Descending})
+		PageSize                   int
+	}{s.tableARN, s.tableID, q.PartitionKey, q.SortKeyPrefix, queryPageSize(q)})
 	digest := sha256.Sum256(data)
 	return hex.EncodeToString(digest[:])
 }
@@ -74,21 +74,18 @@ func queryKey(attrs map[string]types.AttributeValue, q kv.KeyValueQuery) (kv.Key
 	return key, nil
 }
 
-func queryFollows(next, previous string, descending bool) bool {
-	if descending {
-		return next < previous
+func queryPageSize(q kv.KeyValueQuery) int {
+	if q.PageSize == 0 {
+		return 100
 	}
-	return next > previous
+	return q.PageSize
 }
 
 func (s *dynamoStore) QueryPartition(ctx context.Context, q kv.KeyValueQuery) (kv.KeyValueQueryPage, error) {
 	if _, err := dynamoKey(kv.KeyValueKey{PartitionKey: q.PartitionKey, SortKey: q.SortKeyPrefix}); err != nil || q.PageSize < 0 || q.PageSize > 1000 {
 		return kv.KeyValueQueryPage{}, failure(queryOperation, contracts.ErrInvalidArgument, nil)
 	}
-	limit := q.PageSize
-	if limit == 0 {
-		limit = 100
-	}
+	limit := queryPageSize(q)
 	start, err := s.queryStart(q)
 	if err != nil {
 		return kv.KeyValueQueryPage{}, err
@@ -98,7 +95,7 @@ func (s *dynamoStore) QueryPartition(ctx context.Context, q kv.KeyValueQuery) (k
 	}
 	input := &dynamodb.QueryInput{
 		TableName: aws.String(s.table), ConsistentRead: aws.Bool(true),
-		ScanIndexForward: aws.Bool(!q.Descending), Limit: aws.Int32(int32(limit)),
+		ScanIndexForward: aws.Bool(true), Limit: aws.Int32(int32(limit)),
 		KeyConditionExpression:    aws.String("#pk = :pk"),
 		ExpressionAttributeNames:  map[string]string{"#pk": "pk"},
 		ExpressionAttributeValues: map[string]types.AttributeValue{":pk": &types.AttributeValueMemberS{Value: "s" + q.PartitionKey}},
@@ -127,7 +124,7 @@ func (s *dynamoStore) QueryPartition(ctx context.Context, q kv.KeyValueQuery) (k
 		if err != nil {
 			return kv.KeyValueQueryPage{}, err
 		}
-		if hasPrevious && !queryFollows(key.SortKey, previous, q.Descending) {
+		if hasPrevious && key.SortKey <= previous {
 			return kv.KeyValueQueryPage{}, failure(queryOperation, contracts.ErrUnknown, nil)
 		}
 		record, err := decodeDynamoRecord(queryOperation, key, attrs)
@@ -142,7 +139,7 @@ func (s *dynamoStore) QueryPartition(ctx context.Context, q kv.KeyValueQuery) (k
 		if err != nil {
 			return kv.KeyValueQueryPage{}, err
 		}
-		if len(out.LastEvaluatedKey) != 2 || (hasPrevious && last.SortKey != previous && !queryFollows(last.SortKey, previous, q.Descending)) || (len(out.Items) == 0 && hasPrevious && last.SortKey == previous) {
+		if len(out.LastEvaluatedKey) != 2 || (hasPrevious && last.SortKey < previous) || (len(out.Items) == 0 && hasPrevious && last.SortKey == previous) {
 			return kv.KeyValueQueryPage{}, failure(queryOperation, contracts.ErrUnknown, nil)
 		}
 		data, _ := json.Marshal(queryCursor{Version: 1, Binding: s.queryBinding(q), SortKey: last.SortKey})

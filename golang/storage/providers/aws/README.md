@@ -116,15 +116,17 @@ by the writer and are descriptive, not the concurrency condition.
 `QueryPartition` uses a strongly consistent DynamoDB Query on the base table,
 with an exact encoded partition and optional literal sort-key prefix. It never
 uses Scan, secondary indexes, post-read filters, or automatic pagination. UTF-8
-byte order is preserved by the constant key prefix. `Descending` reverses the
-order. Page sizes default to 100 and are capped at 1000 records; DynamoDB's 1 MiB
+byte order is preserved by the constant key prefix; order is always ascending.
+Page sizes default to 100 and are capped at 1000 records; DynamoDB's 1 MiB
 response bound can end a page earlier. No cross-record or multi-page snapshot is
 promised. See the [portable query example](../../providercontracts/README.md#partition-queries).
 
 Continuation tokens are versioned, bounded to 16 KiB, and bind the table ARN
-(account/region/name), table incarnation ID, partition, prefix and direction.
-They work after reopening the same table or restarting a process; changing page
-size is permitted. Reopening a recreated table rejects its predecessor's tokens.
+(account/region/name), table incarnation ID, partition, prefix and normalized
+page size.
+They work after reopening the same table or restarting a process. Keep the page
+size unchanged; default zero and explicit 100 are equivalent. Reopening a
+recreated table rejects its predecessor's tokens.
 Tokens contain keys and must not be logged. They are opaque continuation state,
 not signed authorization grants: applications must authorize every query.
 Malformed/mismatched tokens fail before I/O. Corrupt or out-of-order backend
@@ -184,7 +186,7 @@ needed when opening a known store. Provisioning permissions are never needed.
 
 ## Development and release
 
-Local development uses the repository's `go.work`; module manifests contain real
+Local development uses the repository's `go.work`; module manifests contain semantic
 version requirements and no local replacements. The coordinated v0.1.0 release
 is pending: see the [release procedure](../../RELEASING.md) for the required tags
 on merged master and the independent consumer check. Workspace checks alone do
