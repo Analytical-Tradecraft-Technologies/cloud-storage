@@ -12,8 +12,9 @@ It does not connect to a cloud service. The initial packages are:
 | `providercontracts` | Errors recognized with `errors.Is` |
 | `kv` | `KeyValueStore`, `KeyValueKey`, `KeyValueItem`, `KeyValueRecord`, typed fields |
 | `blob` | `BlobStore`, `BlobKey`, `BlobReadResult` |
+| `provider` | `StorageProvider`, paginated discovery and opening existing stores |
 
-Provider implementations will live in separate modules, depend on this provider contracts
+Provider implementations live in separate modules, depend on this provider contracts
 module, and accept
 provider-specific configuration. Credentials, endpoints, tables, containers,
 client ownership and authentication policy do not belong in these contracts.
@@ -159,6 +160,19 @@ sensitive request details. The full cause remains available for explicit
 inspection. Providers must classify using SDK codes/types, not message parsing;
 unrecognized failures use `ErrUnknown` with the original cause.
 
+## Multiple stores
+
+`provider.StorageProvider` opens an existing KV or blob store by name and offers
+separate paginated `ListKeyValueStores` and `ListBlobStores` operations. Provider
+configuration determines the account and region scope. Listing resources does
+not grant access or certify that their schemas are supported. Opening a known
+store does not require permission for account-wide discovery.
+
+Stores are namespaces, not individual records or objects. Provisioning stores,
+listing records/objects within a store, and a final caller-facing wrapper are
+separate concerns and are not added by this interface. The initial
+[AWS implementation](../providers/aws) maps stores to existing tables and buckets.
+
 ## Blob semantics
 
 `blob.BlobStore` provides Create, Open and Delete; Open returns a `blob.BlobReadResult`.
@@ -184,7 +198,7 @@ unique keys where that race matters. Unconfirmed deletions use
 Deletion makes the blob unavailable through this contract; it does not promise
 erasure of historical versions, snapshots or backups.
 
-## Intended backend mappings (not implemented)
+## Backend mappings
 
 | Contract | AWS | Azure | Google Cloud |
 | --- | --- | --- | --- |
@@ -208,7 +222,7 @@ References:
 
 ## Deliberately deferred
 
-Provider implementations, in-memory stores, conformance suites, automatic
+Additional provider implementations, in-memory stores, conformance suites, automatic
 retries, transactions, listing, TTL, configuration
 loaders and metrics wrappers. Add these when a concrete caller requires them.
 Provider implementations should bring shared behavioral tests for concurrency,
