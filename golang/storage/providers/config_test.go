@@ -109,6 +109,22 @@ func TestConfigurationValidationBeforeInitialization(t *testing.T) {
 	}
 }
 
+func TestAWSMRSCConfig(t *testing.T) {
+	for _, text := range []string{`{}`, `{"allow_mrsc":false}`, `{"allow_mrsc":true}`} {
+		object := parsed(t, text)
+		cfg, err := awsConfig(object)
+		want, _ := object["allow_mrsc"].(bool)
+		if err != nil || cfg.AllowMRSC != want {
+			t.Fatalf("%s: %+v %v", text, cfg, err)
+		}
+	}
+	for _, text := range []string{`{"allow_mrsc":"true"}`, `{"allow_mrsc":null}`, `{"allow_mrsc":1}`, `{"allow_mrsc":{}}`} {
+		if _, err := awsConfig(parsed(t, text)); !errors.Is(err, contracts.ErrInvalidArgument) {
+			t.Fatalf("%s: %v", text, err)
+		}
+	}
+}
+
 func TestAWSConfig(t *testing.T) {
 	cfg, err := awsConfig(parsed(t, `{"region":"ap-southeast-2","profile":"development","temp_directory":"/tmp/staging"}`))
 	if err != nil || cfg.Region != "ap-southeast-2" || cfg.Profile != "development" || cfg.TempDirectory != "/tmp/staging" {

@@ -29,9 +29,19 @@ its typed constructors.
 }
 ```
 
-`type` and the `aws` object are required. AWS options are optional strings and
-use the existing AWS SDK defaults when omitted or empty. Credentials are loaded
-through the IAM credential chain; the JSON does not accept access keys.
+`type` and the `aws` object are required. `region`, `profile` and `temp_directory`
+are optional strings and use the existing AWS SDK defaults when omitted or empty.
+The optional `aws.allow_mrsc` boolean defaults to false. Set it to true to allow
+DynamoDB global tables that explicitly report multi-Region strong consistency:
+
+```json
+{"type":"aws","aws":{"region":"us-east-2","allow_mrsc":true},"key_value_stores":{"events":"production-events"}}
+```
+
+Single-region tables remain supported with either value. Eventually consistent
+global tables are always rejected. This option validates existing resources; it
+does not provision replication, route across regions, or change S3 behavior.
+Credentials are loaded through the IAM credential chain; the JSON does not accept access keys.
 
 Each store map pairs an internal application name with an external resource name.
 KV names are DynamoDB table names and blob names are S3 bucket names. The two

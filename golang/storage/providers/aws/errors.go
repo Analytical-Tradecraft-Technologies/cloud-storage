@@ -28,6 +28,12 @@ func wrapError(ctx context.Context, op string, cause error, mutation bool) error
 		case "ConditionalCheckFailedException", "PreconditionFailed", "ConditionalRequestConflict":
 			kind = contracts.ErrConflict
 			definitive = true
+		case "ReplicatedWriteConflictException":
+			// AWS rejected this attempt because another Region is modifying the
+			// item. It is retryable contention, not a failed version condition
+			// or an ambiguous commit. Leave retries to the caller.
+			kind = contracts.ErrUnavailable
+			definitive = true
 		case "AccessDenied", "AccessDeniedException", "Forbidden":
 			kind = contracts.ErrPermissionDenied
 			definitive = true

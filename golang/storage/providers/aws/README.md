@@ -73,18 +73,50 @@ be reused across providers or listing methods.
 
 ## DynamoDB layout and consistency
 
-A store requires an ACTIVE, single-region table with these primary keys:
+A store requires an ACTIVE single-region table, or an explicitly opted-in MRSC
+global table, with these primary keys:
 
 | Attribute | DynamoDB type | Role |
 | --- | --- | --- |
 | `pk` | String | Partition key |
 | `sk` | String | Sort key |
 
-`OpenKeyValueStore` calls DescribeTable and rejects incompatible schemas and
-global tables. Data operations use the validated table ARN, so rotating credentials
-cannot redirect a handle to an equally named table in another account. Keep the
-table single-region while using the handle; reopen handles after deleting and
-recreating a table. Table identity is validated at open, not before every call. All writers
+`OpenKeyValueStore` calls DescribeTable and rejects incompatible schemas. Global
+tables are rejected by default. To permit multi-Region strong consistency (MRSC),
+set `AWSProviderConfig.AllowMRSC` to true:
+
+```go
+p, err := awsprovider.New(ctx, awsprovider.AWSProviderConfig{
+    Region: "us-east-2",
+    AllowMRSC: true,
+})
+```
+
+For an existing SDK configuration, use
+`NewFromConfigWithOptions(sdkConfig, AWSProviderOptions{AllowMRSC: true})`.
+`NewFromConfig(sdkConfig)` retains the single-region-only default. Opting in also
+allows ordinary single-region tables. A global table must explicitly report
+`MultiRegionConsistency: STRONG`; MREC, missing mode metadata on a replicated
+table, and unknown modes are rejected. Replicas, global-table version and witness
+metadata are checked so missing mode information cannot bypass validation.
+
+MRSC's globally evaluated conditions and strongly consistent reads preserve the
+KV contract and the event store's conditional-create revision protocol. The
+adapter uses no DynamoDB transactions or eventually consistent secondary indexes.
+Provision MRSC before writing production data: AWS only supports converting an
+empty single-region table. Region availability and topology are AWS provisioning
+concerns, not a hardcoded region list in this library.
+
+Data operations use the validated regional table ARN, so rotating credentials
+cannot redirect a handle to an equally named table in another account. Each
+provider still accesses one region: create a separate opted-in provider for each
+replica. There is no automatic routing or failover. IAM must allow the relevant
+replica ARNs. S3 behavior and replication are unchanged; a replicated event row
+does not guarantee that a referenced blob is available in another region.
+
+Keep the table's validated consistency configuration while using a handle; reopen
+handles after changing topology or deleting and recreating a table. Table identity
+and consistency are validated at open, not before every call. All writers
 must use this adapter's format and concurrency protocol; external unconditional
 writes or lifecycle deletion can violate its guarantees.
 
@@ -126,7 +158,8 @@ Continuation tokens are versioned, bounded to 16 KiB, and bind the table ARN
 page size.
 They work after reopening the same table or restarting a process. Keep the page
 size unchanged; default zero and explicit 100 are equivalent. Reopening a
-recreated table rejects its predecessor's tokens.
+recreated table rejects its predecessor's tokens. Tokens cannot cross replica
+regions; restart traversal when switching regions.
 Tokens contain keys and must not be logged. They are opaque continuation state,
 not signed authorization grants: applications must authorize every query.
 Malformed/mismatched tokens fail before I/O. Corrupt or out-of-order backend
@@ -167,6 +200,15 @@ has a known outcome; transport/server failures after entering a mutation call
 are conservatively marked `OutcomeUnknown`. Reconcile before deciding to retry.
 The adapter does not add automatic idempotency reconciliation.
 
+MRSC `ReplicatedWriteConflictException` is classified as `ErrUnavailable` with a
+known rejected outcome, and its SDK cause is retained. It is not `ErrConflict`
+(expected-version mismatch) or `ErrAlreadyExists` (existing create key). The SDK
+still makes only one attempt. Callers may retry the same conditional mutation
+with bounded backoff. Event-sourcing callers must retain the same expected
+revision, append token and batch; a subsequent condition failure follows the
+existing idempotency/conflict reconciliation. Lost responses and transport/server
+failures remain `ErrOutcomeUnknown` and still require reconciliation.
+
 ## IAM permissions
 
 Grant only the operations each application needs:
@@ -205,3 +247,4 @@ References:
 - [DynamoDB limits](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Constraints.html)
 - [S3 conditional PutObject](https://docs.aws.amazon.com/AmazonS3/latest/API/API_PutObject.html)
 - [Regional paginated bucket discovery](https://docs.aws.amazon.com/AmazonS3/latest/API/API_ListBuckets.html)
+- [DynamoDB global-table consistency modes and MRSC restrictions](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/V2globaltables_HowItWorks.html)

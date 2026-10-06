@@ -27,6 +27,15 @@ type AWSProviderConfig struct {
 	Region        string
 	Profile       string
 	TempDirectory string
+	// AllowMRSC permits global tables only when DescribeTable reports STRONG.
+	// The default rejects all global tables. This does not enable failover.
+	AllowMRSC bool
+}
+
+// AWSProviderOptions controls optional behavior for an existing SDK configuration.
+// Zero values preserve the single-region-only default.
+type AWSProviderOptions struct {
+	AllowMRSC bool
 }
 
 // AWSStorageProvider shares SDK clients across lightweight table/bucket handles.
@@ -36,6 +45,7 @@ type AWSStorageProvider struct {
 	s3            s3API
 	region        string
 	tempDirectory string
+	allowMRSC     bool
 }
 
 var _ provider.StorageProvider = (*AWSStorageProvider)(nil)
@@ -54,7 +64,7 @@ func New(ctx context.Context, cfg AWSProviderConfig) (*AWSStorageProvider, error
 	if err != nil {
 		return nil, wrapError(ctx, "provider.configure", err, false)
 	}
-	p, err := NewFromConfig(sdk)
+	p, err := NewFromConfigWithOptions(sdk, AWSProviderOptions{AllowMRSC: cfg.AllowMRSC})
 	if err != nil {
 		return nil, err
 	}
@@ -68,6 +78,13 @@ func New(ctx context.Context, cfg AWSProviderConfig) (*AWSStorageProvider, error
 // are forced to single-attempt to avoid disguising uncertain mutation outcomes.
 // Use New when a custom staging directory is needed.
 func NewFromConfig(cfg aws.Config) (*AWSStorageProvider, error) {
+	return NewFromConfigWithOptions(cfg, AWSProviderOptions{})
+}
+
+// NewFromConfigWithOptions is NewFromConfig with explicit optional capabilities.
+// AllowMRSC permits strongly consistent global tables, never eventual ones.
+// Clients still target cfg.Region; routing and failover remain caller-owned.
+func NewFromConfigWithOptions(cfg aws.Config, options AWSProviderOptions) (*AWSStorageProvider, error) {
 	if cfg.Region == "" || cfg.Credentials == nil {
 		return nil, failure("provider.configure", contracts.ErrInvalidArgument, nil)
 	}
@@ -77,13 +94,14 @@ func NewFromConfig(cfg aws.Config) (*AWSStorageProvider, error) {
 	}
 	cfg.ClientLogMode = 0
 	cfg.Retryer = func() aws.Retryer { return aws.NopRetryer{} }
-	return &AWSStorageProvider{dynamo: dynamodb.NewFromConfig(cfg), s3: s3.NewFromConfig(cfg), region: cfg.Region}, nil
+	return &AWSStorageProvider{dynamo: dynamodb.NewFromConfig(cfg), s3: s3.NewFromConfig(cfg), region: cfg.Region, allowMRSC: options.AllowMRSC}, nil
 }
 
 var tableName = regexp.MustCompile(`^[a-zA-Z0-9_.-]{3,255}$`)
 var bucketName = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
 
-// OpenKeyValueStore validates a single-region table with string pk/sk keys.
+// OpenKeyValueStore validates string pk/sk keys and table consistency.
+// Global tables require AllowMRSC and an explicit STRONG consistency mode.
 // This adapter exclusively owns the record format in that table; arbitrary
 // existing DynamoDB records are not automatically imported.
 func (p *AWSStorageProvider) OpenKeyValueStore(ctx context.Context, name string) (kv.KeyValueStore, error) {
@@ -102,7 +120,12 @@ func (p *AWSStorageProvider) OpenKeyValueStore(ctx context.Context, name string)
 		return nil, failure(op, contracts.ErrUnknown, nil)
 	}
 	table := out.Table
-	if len(table.Replicas) != 0 || aws.ToString(table.GlobalTableVersion) != "" {
+	// Missing consistency metadata must never make a replicated table eligible.
+	global := len(table.Replicas) != 0 || aws.ToString(table.GlobalTableVersion) != "" || len(table.GlobalTableWitnesses) != 0 || table.MultiRegionConsistency == ddbtypes.MultiRegionConsistencyStrong
+	if global && (!p.allowMRSC || table.MultiRegionConsistency != ddbtypes.MultiRegionConsistencyStrong) {
+		return nil, failure(op, contracts.ErrUnsupported, nil)
+	}
+	if mode := table.MultiRegionConsistency; mode != "" && mode != ddbtypes.MultiRegionConsistencyEventual && mode != ddbtypes.MultiRegionConsistencyStrong {
 		return nil, failure(op, contracts.ErrUnsupported, nil)
 	}
 	if table.TableStatus != ddbtypes.TableStatusActive {

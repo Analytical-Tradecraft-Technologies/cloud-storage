@@ -19,7 +19,7 @@ func newAWS(ctx context.Context, object map[string]any) (provider.StorageProvide
 
 func awsConfig(object map[string]any) (awsprovider.AWSProviderConfig, error) {
 	cfg := awsprovider.AWSProviderConfig{}
-	if err := knownFields(object, "region", "profile", "temp_directory"); err != nil {
+	if err := knownFields(object, "region", "profile", "temp_directory", "allow_mrsc"); err != nil {
 		return cfg, err
 	}
 	for field, target := range map[string]*string{
@@ -32,6 +32,13 @@ func awsConfig(object map[string]any) (awsprovider.AWSProviderConfig, error) {
 			}
 			*target = value
 		}
+	}
+	if raw, exists := object["allow_mrsc"]; exists {
+		value, ok := raw.(bool)
+		if !ok {
+			return awsprovider.AWSProviderConfig{}, invalid("allow_mrsc must be a boolean")
+		}
+		cfg.AllowMRSC = value
 	}
 	return cfg, nil
 }

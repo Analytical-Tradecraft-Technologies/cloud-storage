@@ -2,7 +2,9 @@ package awsprovider
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -207,5 +209,168 @@ func TestTransportDeadlinePreservesOutcomeAndCause(t *testing.T) {
 	err := wrapError(ctx, "kv.create", cause, true)
 	if !errors.Is(err, cause) || !errors.Is(err, context.Canceled) || !errors.Is(err, contracts.ErrOutcomeUnknown) {
 		t.Fatal(err)
+	}
+}
+
+func TestMRSCOptInAndValidation(t *testing.T) {
+	for _, allow := range []bool{false, true} {
+		for _, tc := range []struct {
+			name   string
+			mutate func(*ddbtypes.TableDescription)
+			want   contracts.StorageErrorKind
+		}{
+			{name: "single-region", mutate: func(*ddbtypes.TableDescription) {}},
+			{name: "single-region-eventual-default", mutate: func(d *ddbtypes.TableDescription) { d.MultiRegionConsistency = ddbtypes.MultiRegionConsistencyEventual }},
+			{name: "mrsc", mutate: func(d *ddbtypes.TableDescription) {
+				d.GlobalTableVersion = aws.String("2019.11.21")
+				d.Replicas = []ddbtypes.ReplicaDescription{{RegionName: aws.String("us-east-1")}}
+				d.MultiRegionConsistency = ddbtypes.MultiRegionConsistencyStrong
+			}},
+			{name: "mrsc-with-witness", mutate: func(d *ddbtypes.TableDescription) {
+				d.GlobalTableWitnesses = []ddbtypes.GlobalTableWitnessDescription{{RegionName: aws.String("us-west-2")}}
+				d.MultiRegionConsistency = ddbtypes.MultiRegionConsistencyStrong
+			}},
+			{name: "missing-mode-replicas", mutate: func(d *ddbtypes.TableDescription) {
+				d.Replicas = []ddbtypes.ReplicaDescription{{RegionName: aws.String("us-east-1")}}
+			}, want: contracts.ErrUnsupported},
+			{name: "missing-mode-version", mutate: func(d *ddbtypes.TableDescription) { d.GlobalTableVersion = aws.String("2019.11.21") }, want: contracts.ErrUnsupported},
+			{name: "missing-mode-witness", mutate: func(d *ddbtypes.TableDescription) {
+				d.GlobalTableWitnesses = []ddbtypes.GlobalTableWitnessDescription{{RegionName: aws.String("us-west-2")}}
+			}, want: contracts.ErrUnsupported},
+			{name: "mrec", mutate: func(d *ddbtypes.TableDescription) {
+				d.GlobalTableVersion = aws.String("2019.11.21")
+				d.MultiRegionConsistency = ddbtypes.MultiRegionConsistencyEventual
+			}, want: contracts.ErrUnsupported},
+			{name: "unknown-mode", mutate: func(d *ddbtypes.TableDescription) { d.MultiRegionConsistency = "FUTURE" }, want: contracts.ErrUnsupported},
+			{name: "mrsc-wrong-schema", mutate: func(d *ddbtypes.TableDescription) {
+				d.MultiRegionConsistency = ddbtypes.MultiRegionConsistencyStrong
+				d.KeySchema = d.KeySchema[:1]
+			}, want: contracts.ErrUnsupported},
+			{name: "mrsc-inactive", mutate: func(d *ddbtypes.TableDescription) {
+				d.MultiRegionConsistency = ddbtypes.MultiRegionConsistencyStrong
+				d.TableStatus = ddbtypes.TableStatusCreating
+			}, want: contracts.ErrUnavailable},
+		} {
+			t.Run(fmt.Sprintf("allow=%t/%s", allow, tc.name), func(t *testing.T) {
+				table := compatibleTable()
+				tc.mutate(table)
+				p, err := NewFromConfigWithOptions(aws.Config{Region: "us-east-2", Credentials: credentials.NewStaticCredentialsProvider("test", "test", "")}, AWSProviderOptions{AllowMRSC: allow})
+				if err != nil {
+					t.Fatal(err)
+				}
+				p.dynamo = &fakeDynamo{describe: func(*dynamodb.DescribeTableInput) (*dynamodb.DescribeTableOutput, error) {
+					return &dynamodb.DescribeTableOutput{Table: table}, nil
+				}}
+				want := tc.want
+				if !allow && table.MultiRegionConsistency == ddbtypes.MultiRegionConsistencyStrong {
+					want = contracts.ErrUnsupported
+				}
+				store, err := p.OpenKeyValueStore(context.Background(), "table")
+				if want == "" {
+					if err != nil || store == nil {
+						t.Fatalf("store=%v err=%v", store, err)
+					}
+				} else if !errors.Is(err, want) || store != nil {
+					t.Fatalf("store=%v err=%v want=%v", store, err, want)
+				}
+			})
+		}
+	}
+}
+
+func TestMRSCConstructorDefaults(t *testing.T) {
+	cfg := aws.Config{Region: "us-east-2", Credentials: credentials.NewStaticCredentialsProvider("test", "test", "")}
+	p, err := NewFromConfig(cfg)
+	if err != nil || p.allowMRSC {
+		t.Fatalf("legacy constructor changed: %v", err)
+	}
+	t.Setenv("AWS_CONFIG_FILE", t.TempDir()+"/absent")
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", t.TempDir()+"/absent")
+	t.Setenv("AWS_PROFILE", "")
+	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
+	for _, allow := range []bool{false, true} {
+		p, err := New(context.Background(), AWSProviderConfig{Region: "us-east-2", AllowMRSC: allow})
+		if err != nil || p.allowMRSC != allow {
+			t.Fatalf("AllowMRSC=%t: %v", allow, err)
+		}
+	}
+}
+
+func TestMRSCWriteContentionIsDefinitiveAndNotRetried(t *testing.T) {
+	for _, op := range []string{"create", "replace", "delete"} {
+		t.Run(op, func(t *testing.T) {
+			calls := 0
+			p, err := NewFromConfigWithOptions(aws.Config{Region: "us-east-2", Credentials: credentials.NewStaticCredentialsProvider("test", "test", ""), RetryMaxAttempts: 5, HTTPClient: httpClientFunc(func(r *http.Request) (*http.Response, error) {
+				calls++
+				return &http.Response{StatusCode: 400, Header: http.Header{"Content-Type": []string{"application/x-amz-json-1.0"}}, Body: io.NopCloser(strings.NewReader(`{"__type":"ReplicatedWriteConflictException","message":"concurrent regional write"}`)), Request: r}, nil
+			})}, AWSProviderOptions{AllowMRSC: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			s := &dynamoStore{client: p.dynamo, table: "table"}
+			item := kv.KeyValueItem{PartitionKey: "stream", SortKey: "revision"}
+			switch op {
+			case "create":
+				_, err = s.Create(context.Background(), item)
+			case "replace":
+				_, err = s.Replace(context.Background(), item, "expected")
+			case "delete":
+				err = s.Delete(context.Background(), item.Key(), "expected")
+			}
+			var cause *ddbtypes.ReplicatedWriteConflictException
+			if calls != 1 || !errors.Is(err, contracts.ErrUnavailable) || !errors.As(err, &cause) || errors.Is(err, contracts.ErrOutcomeUnknown) || errors.Is(err, contracts.ErrAlreadyExists) || errors.Is(err, contracts.ErrConflict) {
+				t.Fatalf("calls=%d err=%v cause=%T", calls, err, cause)
+			}
+		})
+	}
+}
+
+func TestMRSCSDKValidationAndConsistentReads(t *testing.T) {
+	for _, allow := range []bool{false, true} {
+		t.Run(fmt.Sprintf("allow=%t", allow), func(t *testing.T) {
+			calls := 0
+			const arn = "arn:aws:dynamodb:us-east-2:123456789012:table/events"
+			p, err := NewFromConfigWithOptions(aws.Config{Region: "us-east-2", Credentials: credentials.NewStaticCredentialsProvider("test", "test", ""), HTTPClient: httpClientFunc(func(r *http.Request) (*http.Response, error) {
+				calls++
+				var input map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+					t.Fatal(err)
+				}
+				body := `{}`
+				switch r.Header.Get("X-Amz-Target") {
+				case "DynamoDB_20120810.DescribeTable":
+					body = `{"Table":{"TableStatus":"ACTIVE","TableId":"test-table-id","TableArn":"` + arn + `","MultiRegionConsistency":"STRONG","GlobalTableVersion":"2019.11.21","Replicas":[{"RegionName":"us-east-1"},{"RegionName":"us-west-2"}],"KeySchema":[{"AttributeName":"pk","KeyType":"HASH"},{"AttributeName":"sk","KeyType":"RANGE"}],"AttributeDefinitions":[{"AttributeName":"pk","AttributeType":"S"},{"AttributeName":"sk","AttributeType":"S"}]}}`
+				case "DynamoDB_20120810.GetItem", "DynamoDB_20120810.Query":
+					if input["ConsistentRead"] != true || input["TableName"] != arn || input["IndexName"] != nil {
+						t.Fatalf("read does not use authoritative regional table: %+v", input)
+					}
+				default:
+					t.Fatalf("unexpected request: %s", r.Header.Get("X-Amz-Target"))
+				}
+				return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"application/x-amz-json-1.0"}}, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+			})}, AWSProviderOptions{AllowMRSC: allow})
+			if err != nil {
+				t.Fatal(err)
+			}
+			store, err := p.OpenKeyValueStore(context.Background(), "events")
+			if !allow {
+				if !errors.Is(err, contracts.ErrUnsupported) || calls != 1 {
+					t.Fatalf("default accepted MRSC: calls=%d err=%v", calls, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.Get(context.Background(), kv.KeyValueKey{PartitionKey: "stream"}); !errors.Is(err, contracts.ErrNotFound) {
+				t.Fatal(err)
+			}
+			if _, err := store.QueryPartition(context.Background(), kv.KeyValueQuery{PartitionKey: "stream"}); err != nil {
+				t.Fatal(err)
+			}
+			if calls != 3 {
+				t.Fatalf("unexpected requests: %d", calls)
+			}
+		})
 	}
 }
