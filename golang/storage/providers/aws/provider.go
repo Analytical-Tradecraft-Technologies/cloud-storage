@@ -102,7 +102,8 @@ var bucketName = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
 
 // OpenKeyValueStore validates string pk/sk keys and table consistency.
 // Global tables require AllowMRSC and an explicit STRONG consistency mode.
-// ACTIVE and UPDATING tables open; other statuses return ErrUnavailable.
+// ACTIVE tables open, as do UPDATING single-region tables; other statuses
+// return ErrUnavailable.
 // This adapter exclusively owns the record format in that table; arbitrary
 // existing DynamoDB records are not automatically imported.
 func (p *AWSStorageProvider) OpenKeyValueStore(ctx context.Context, name string) (kv.KeyValueStore, error) {
@@ -129,7 +130,7 @@ func (p *AWSStorageProvider) OpenKeyValueStore(ctx context.Context, name string)
 	if mode := table.MultiRegionConsistency; mode != "" && mode != ddbtypes.MultiRegionConsistencyEventual && mode != ddbtypes.MultiRegionConsistencyStrong {
 		return nil, failure(op, contracts.ErrUnsupported, nil)
 	}
-	if !dataPlaneAvailable(table) {
+	if !dataPlaneAvailable(table, global) {
 		return nil, failure(op, contracts.ErrUnavailable, nil)
 	}
 	schema := map[string]ddbtypes.KeyType{}
@@ -150,38 +151,24 @@ func (p *AWSStorageProvider) OpenKeyValueStore(ctx context.Context, name string)
 }
 
 // dataPlaneAvailable reports whether DynamoDB documents the table as usable for
-// item reads and writes. UPDATING means a table or index configuration change,
-// such as capacity, billing mode, encryption, streams or table class; AWS keeps
-// the table available for data operations meanwhile. CREATING, DELETING,
-// ARCHIVING, ARCHIVED, INACCESSIBLE_ENCRYPTION_CREDENTIALS,
-// REPLICATION_NOT_AUTHORIZED, missing and future statuses fail closed.
-func dataPlaneAvailable(table *ddbtypes.TableDescription) bool {
+// item reads and writes. For a single-region table, UPDATING means a table or
+// index configuration change, such as capacity, billing mode, encryption,
+// streams or table class, and AWS keeps the table available for data operations
+// meanwhile. A global table reports UPDATING both for routine maintenance and
+// while it converts to MRSC, when AWS requires that no data is written until
+// the table returns to ACTIVE. The description cannot tell those apart, so a
+// global table opens only when ACTIVE. CREATING, DELETING, ARCHIVING, ARCHIVED,
+// INACCESSIBLE_ENCRYPTION_CREDENTIALS, REPLICATION_NOT_AUTHORIZED, missing and
+// future statuses fail closed.
+func dataPlaneAvailable(table *ddbtypes.TableDescription, global bool) bool {
 	switch table.TableStatus {
 	case ddbtypes.TableStatusActive:
 		return true
 	case ddbtypes.TableStatusUpdating:
-		return replicationGroupSettled(table)
+		return !global
 	default:
 		return false
 	}
-}
-
-// replicationGroupSettled rejects an UPDATING table while replicas or a witness
-// are being added or removed, or are not serving. Converting an empty table to
-// MRSC also reports UPDATING, and AWS requires that no data is written until it
-// completes. Replica UPDATING is a settings change and remains usable.
-func replicationGroupSettled(table *ddbtypes.TableDescription) bool {
-	for _, replica := range table.Replicas {
-		if replica.ReplicaStatus != ddbtypes.ReplicaStatusActive && replica.ReplicaStatus != ddbtypes.ReplicaStatusUpdating {
-			return false
-		}
-	}
-	for _, witness := range table.GlobalTableWitnesses {
-		if witness.WitnessStatus != ddbtypes.WitnessStatusActive {
-			return false
-		}
-	}
-	return true
 }
 
 // OpenBlobStore checks access and region for an existing general-purpose bucket.

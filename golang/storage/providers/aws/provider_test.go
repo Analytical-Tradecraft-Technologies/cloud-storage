@@ -338,20 +338,23 @@ func TestMRSCOptInAndValidation(t *testing.T) {
 				d.MultiRegionConsistency = ddbtypes.MultiRegionConsistencyStrong
 				d.TableStatus = ddbtypes.TableStatusCreating
 			}, want: contracts.ErrUnavailable},
-			// Settings changes such as auto scaling keep an MRSC table usable.
-			{name: "mrsc-updating", mutate: mrscUpdating(ddbtypes.ReplicaStatusActive, ddbtypes.WitnessStatusActive)},
-			{name: "mrsc-updating-replica-settings", mutate: mrscUpdating(ddbtypes.ReplicaStatusUpdating, ddbtypes.WitnessStatusActive)},
-			// AWS requires no writes while an empty table converts to MRSC.
+			// An UPDATING global table may be converting to MRSC, which forbids
+			// writes until the table is ACTIVE, even after its replica and
+			// witness report ACTIVE. Routine maintenance looks the same.
+			{name: "mrsc-updating", mutate: mrscUpdating(ddbtypes.ReplicaStatusActive, ddbtypes.WitnessStatusActive), want: contracts.ErrUnavailable},
+			{name: "mrsc-updating-replica-settings", mutate: mrscUpdating(ddbtypes.ReplicaStatusUpdating, ddbtypes.WitnessStatusActive), want: contracts.ErrUnavailable},
 			{name: "mrsc-converting", mutate: mrscUpdating(ddbtypes.ReplicaStatusCreating, ddbtypes.WitnessStatusCreating), want: contracts.ErrUnavailable},
 			{name: "mrsc-updating-witness-creating", mutate: mrscUpdating(ddbtypes.ReplicaStatusActive, ddbtypes.WitnessStatusCreating), want: contracts.ErrUnavailable},
 			{name: "mrsc-updating-replica-deleting", mutate: mrscUpdating(ddbtypes.ReplicaStatusDeleting, ddbtypes.WitnessStatusActive), want: contracts.ErrUnavailable},
 			{name: "mrsc-updating-witness-deleting", mutate: mrscUpdating(ddbtypes.ReplicaStatusActive, ddbtypes.WitnessStatusDeleting), want: contracts.ErrUnavailable},
 			{name: "mrsc-updating-replica-region-disabled", mutate: mrscUpdating(ddbtypes.ReplicaStatusRegionDisabled, ddbtypes.WitnessStatusActive), want: contracts.ErrUnavailable},
 			{name: "mrsc-updating-replica-status-missing", mutate: mrscUpdating("", ddbtypes.WitnessStatusActive), want: contracts.ErrUnavailable},
+			// The status gate rejects an UPDATING global table before the schema
+			// check; TestRejectIncompatibleStores covers UPDATING single-region schemas.
 			{name: "mrsc-updating-wrong-schema", mutate: func(d *ddbtypes.TableDescription) {
 				mrscUpdating(ddbtypes.ReplicaStatusActive, ddbtypes.WitnessStatusActive)(d)
 				d.KeySchema = d.KeySchema[:1]
-			}, want: contracts.ErrUnsupported},
+			}, want: contracts.ErrUnavailable},
 			// Adding a replica without MRSC creates an MREC global table.
 			{name: "mrec-adding-replica", mutate: func(d *ddbtypes.TableDescription) {
 				d.TableStatus = ddbtypes.TableStatusUpdating
