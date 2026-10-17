@@ -73,8 +73,9 @@ be reused across providers or listing methods.
 
 ## DynamoDB layout and consistency
 
-A store requires an ACTIVE single-region table, or an explicitly opted-in MRSC
-global table, with these primary keys:
+A store requires an `ACTIVE` table (or an `UPDATING` single-region table),
+either single-region or an explicitly opted-in MRSC global table, with these
+primary keys:
 
 | Attribute | DynamoDB type | Role |
 | --- | --- | --- |
@@ -119,6 +120,22 @@ handles after changing topology or deleting and recreating a table. Table identi
 and consistency are validated at open, not before every call. All writers
 must use this adapter's format and concurrency protocol; external unconditional
 writes or lifecycle deletion can violate its guarantees.
+
+Opening accepts a `TableStatus` of `ACTIVE`, and `UPDATING` for a
+single-region table. AWS keeps an `UPDATING` table available for data
+operations while a configuration change completes, such as an auto scaling
+capacity change, billing-mode switch, encryption key change, stream change or
+table-class change. Opening, and any readiness check that reopens a store,
+therefore keeps working during routine maintenance of a single-region table.
+The schema checks above still apply to the `UPDATING` description. A global
+table opens only when `ACTIVE`: it also reports `UPDATING` while it converts to
+MRSC, and AWS requires that no data is written until that conversion completes
+and the table returns to `ACTIVE`. The table description cannot distinguish the
+conversion from routine maintenance, so an MRSC table is unavailable to new
+opens while it is `UPDATING`. `CREATING`, `DELETING`, `ARCHIVING`, `ARCHIVED`,
+`INACCESSIBLE_ENCRYPTION_CREDENTIALS`, `REPLICATION_NOT_AUTHORIZED`, missing and
+unrecognized statuses return `ErrUnavailable`. Status is checked at open only;
+an open handle reports later failures from its own data requests.
 
 The adapter owns the table's record format:
 
@@ -242,6 +259,8 @@ prove deployed IAM permissions or real AWS service behavior.
 
 References:
 - [AWS SDK configuration and credential chain](https://docs.aws.amazon.com/sdk-for-go/v2/developer-guide/configure-gosdk.html)
+- [DynamoDB table status (`TableDescription.TableStatus`)](https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_TableDescription.html)
+- [DynamoDB UpdateTable](https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_UpdateTable.html)
 - [DynamoDB Query](https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_Query.html)
 - [DynamoDB conditional PutItem](https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_PutItem.html)
 - [DynamoDB limits](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Constraints.html)
