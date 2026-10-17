@@ -87,6 +87,15 @@ func TestRejectIncompatibleStores(t *testing.T) {
 		func(d *ddbtypes.TableDescription) {
 			d.Replicas = []ddbtypes.ReplicaDescription{{RegionName: aws.String("us-east-1")}}
 		},
+		// UPDATING does not bypass schema or global-table validation.
+		func(d *ddbtypes.TableDescription) {
+			d.TableStatus = ddbtypes.TableStatusUpdating
+			d.KeySchema = d.KeySchema[:1]
+		},
+		func(d *ddbtypes.TableDescription) {
+			d.TableStatus = ddbtypes.TableStatusUpdating
+			d.Replicas = []ddbtypes.ReplicaDescription{{RegionName: aws.String("us-east-1"), ReplicaStatus: ddbtypes.ReplicaStatusCreating}}
+		},
 	} {
 		table := compatibleTable()
 		mutate(table)
@@ -105,6 +114,75 @@ func TestRejectIncompatibleStores(t *testing.T) {
 	}
 	if _, err := p.OpenBlobStore(context.Background(), "bucket--az1--x-s3"); !errors.Is(err, contracts.ErrUnsupported) {
 		t.Fatal(err)
+	}
+}
+
+func TestOpenTableStatus(t *testing.T) {
+	cases := []struct {
+		status ddbtypes.TableStatus
+		want   contracts.StorageErrorKind
+	}{
+		{status: ddbtypes.TableStatusActive},
+		// AWS keeps an UPDATING table available for data operations.
+		{status: ddbtypes.TableStatusUpdating},
+		{status: ddbtypes.TableStatusCreating, want: contracts.ErrUnavailable},
+		{status: ddbtypes.TableStatusDeleting, want: contracts.ErrUnavailable},
+		{status: ddbtypes.TableStatusInaccessibleEncryptionCredentials, want: contracts.ErrUnavailable},
+		{status: ddbtypes.TableStatusArchiving, want: contracts.ErrUnavailable},
+		{status: ddbtypes.TableStatusArchived, want: contracts.ErrUnavailable},
+		{status: ddbtypes.TableStatusReplicationNotAuthorized, want: contracts.ErrUnavailable},
+		{status: "", want: contracts.ErrUnavailable},
+		{status: "FUTURE_STATUS", want: contracts.ErrUnavailable},
+	}
+	covered := map[ddbtypes.TableStatus]bool{}
+	for _, tc := range cases {
+		covered[tc.status] = true
+	}
+	for _, status := range ddbtypes.TableStatus("").Values() {
+		if !covered[status] {
+			t.Errorf("SDK table status %q has no explicit open decision", status)
+		}
+	}
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("status=%q", tc.status), func(t *testing.T) {
+			table := compatibleTable()
+			table.TableStatus = tc.status
+			reads := 0
+			p := &AWSStorageProvider{dynamo: &fakeDynamo{describe: func(*dynamodb.DescribeTableInput) (*dynamodb.DescribeTableOutput, error) {
+				return &dynamodb.DescribeTableOutput{Table: table}, nil
+			}, get: func(in *dynamodb.GetItemInput) (*dynamodb.GetItemOutput, error) {
+				reads++
+				if aws.ToString(in.TableName) != *table.TableArn || !aws.ToBool(in.ConsistentRead) {
+					t.Fatal("read must be strongly consistent on the validated table ARN")
+				}
+				return &dynamodb.GetItemOutput{}, nil
+			}, query: func(in *dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
+				reads++
+				if aws.ToString(in.TableName) != *table.TableArn || !aws.ToBool(in.ConsistentRead) {
+					t.Fatal("query must be strongly consistent on the validated table ARN")
+				}
+				return &dynamodb.QueryOutput{}, nil
+			}}}
+			store, err := p.OpenKeyValueStore(context.Background(), "table")
+			if tc.want != "" {
+				if !errors.Is(err, tc.want) || store != nil || reads != 0 {
+					t.Fatalf("store=%v err=%v reads=%d want=%v", store, err, reads, tc.want)
+				}
+				return
+			}
+			if err != nil || store == nil {
+				t.Fatalf("store=%v err=%v", store, err)
+			}
+			if _, err := store.Get(context.Background(), kv.KeyValueKey{PartitionKey: "account"}); !errors.Is(err, contracts.ErrNotFound) {
+				t.Fatal(err)
+			}
+			if _, err := store.QueryPartition(context.Background(), kv.KeyValueQuery{PartitionKey: "account"}); err != nil {
+				t.Fatal(err)
+			}
+			if reads != 2 {
+				t.Fatalf("unexpected data-plane reads: %d", reads)
+			}
+		})
 	}
 }
 
@@ -213,6 +291,16 @@ func TestTransportDeadlinePreservesOutcomeAndCause(t *testing.T) {
 }
 
 func TestMRSCOptInAndValidation(t *testing.T) {
+	// mrscUpdating describes an UPDATING MRSC table with one replica and a witness.
+	mrscUpdating := func(replica ddbtypes.ReplicaStatus, witness ddbtypes.WitnessStatus) func(*ddbtypes.TableDescription) {
+		return func(d *ddbtypes.TableDescription) {
+			d.TableStatus = ddbtypes.TableStatusUpdating
+			d.GlobalTableVersion = aws.String("2019.11.21")
+			d.MultiRegionConsistency = ddbtypes.MultiRegionConsistencyStrong
+			d.Replicas = []ddbtypes.ReplicaDescription{{RegionName: aws.String("us-east-1"), ReplicaStatus: replica}}
+			d.GlobalTableWitnesses = []ddbtypes.GlobalTableWitnessDescription{{RegionName: aws.String("us-west-2"), WitnessStatus: witness}}
+		}
+	}
 	for _, allow := range []bool{false, true} {
 		for _, tc := range []struct {
 			name   string
@@ -250,6 +338,32 @@ func TestMRSCOptInAndValidation(t *testing.T) {
 				d.MultiRegionConsistency = ddbtypes.MultiRegionConsistencyStrong
 				d.TableStatus = ddbtypes.TableStatusCreating
 			}, want: contracts.ErrUnavailable},
+			// Settings changes such as auto scaling keep an MRSC table usable.
+			{name: "mrsc-updating", mutate: mrscUpdating(ddbtypes.ReplicaStatusActive, ddbtypes.WitnessStatusActive)},
+			{name: "mrsc-updating-replica-settings", mutate: mrscUpdating(ddbtypes.ReplicaStatusUpdating, ddbtypes.WitnessStatusActive)},
+			// AWS requires no writes while an empty table converts to MRSC.
+			{name: "mrsc-converting", mutate: mrscUpdating(ddbtypes.ReplicaStatusCreating, ddbtypes.WitnessStatusCreating), want: contracts.ErrUnavailable},
+			{name: "mrsc-updating-witness-creating", mutate: mrscUpdating(ddbtypes.ReplicaStatusActive, ddbtypes.WitnessStatusCreating), want: contracts.ErrUnavailable},
+			{name: "mrsc-updating-replica-deleting", mutate: mrscUpdating(ddbtypes.ReplicaStatusDeleting, ddbtypes.WitnessStatusActive), want: contracts.ErrUnavailable},
+			{name: "mrsc-updating-witness-deleting", mutate: mrscUpdating(ddbtypes.ReplicaStatusActive, ddbtypes.WitnessStatusDeleting), want: contracts.ErrUnavailable},
+			{name: "mrsc-updating-replica-region-disabled", mutate: mrscUpdating(ddbtypes.ReplicaStatusRegionDisabled, ddbtypes.WitnessStatusActive), want: contracts.ErrUnavailable},
+			{name: "mrsc-updating-replica-status-missing", mutate: mrscUpdating("", ddbtypes.WitnessStatusActive), want: contracts.ErrUnavailable},
+			{name: "mrsc-updating-wrong-schema", mutate: func(d *ddbtypes.TableDescription) {
+				mrscUpdating(ddbtypes.ReplicaStatusActive, ddbtypes.WitnessStatusActive)(d)
+				d.KeySchema = d.KeySchema[:1]
+			}, want: contracts.ErrUnsupported},
+			// Adding a replica without MRSC creates an MREC global table.
+			{name: "mrec-adding-replica", mutate: func(d *ddbtypes.TableDescription) {
+				d.TableStatus = ddbtypes.TableStatusUpdating
+				d.GlobalTableVersion = aws.String("2019.11.21")
+				d.Replicas = []ddbtypes.ReplicaDescription{{RegionName: aws.String("us-east-1"), ReplicaStatus: ddbtypes.ReplicaStatusCreating}}
+			}, want: contracts.ErrUnsupported},
+			{name: "mrec-updating", mutate: func(d *ddbtypes.TableDescription) {
+				d.TableStatus = ddbtypes.TableStatusUpdating
+				d.GlobalTableVersion = aws.String("2019.11.21")
+				d.Replicas = []ddbtypes.ReplicaDescription{{RegionName: aws.String("us-east-1"), ReplicaStatus: ddbtypes.ReplicaStatusActive}}
+				d.MultiRegionConsistency = ddbtypes.MultiRegionConsistencyEventual
+			}, want: contracts.ErrUnsupported},
 		} {
 			t.Run(fmt.Sprintf("allow=%t/%s", allow, tc.name), func(t *testing.T) {
 				table := compatibleTable()
